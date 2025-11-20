@@ -26,7 +26,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     client_id_mobile = entry.data.get("client_id_mobile")
     client_id_web = entry.data.get("client_id_web")
 
-    api = LGThinQAPI(session, refresh_token, client_id_mobile, client_id_web)
+    def token_update_callback(new_refresh_token: str):
+        """Update refresh token in config entry when it changes."""
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, "refresh_token": new_refresh_token},
+        )
+        _LOGGER.debug("Refresh token updated in config entry")
+
+    api = LGThinQAPI(
+        session,
+        refresh_token,
+        client_id_mobile,
+        client_id_web,
+        token_update_callback=token_update_callback,
+    )
 
     try:
         await api.async_login()

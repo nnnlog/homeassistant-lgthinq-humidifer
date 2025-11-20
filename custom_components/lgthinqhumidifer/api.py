@@ -2,6 +2,8 @@
 
 import logging
 import uuid
+import time
+from typing import Callable, Optional
 import aiohttp
 from .const import (
     LGE_AUTH_BASE_URL,
@@ -35,6 +37,7 @@ class LGThinQAPI:
         refresh_token: str = None,
         client_id_mobile: str = None,
         client_id_web: str = None,
+        token_update_callback: Optional[Callable[[str], None]] = None,
     ):
         """Initialize the API client."""
         self._session = session
@@ -43,11 +46,20 @@ class LGThinQAPI:
         self._client_id_web = client_id_web
         self._access_token = None
         self._user_no = None
+        self._token_expiry = None
+        self._token_update_callback = token_update_callback
 
     @property
     def refresh_token(self):
         """Return the refresh token."""
         return self._refresh_token
+
+    def _is_token_expired(self) -> bool:
+        """Check if access token is expired or about to expire."""
+        if not self._access_token or not self._token_expiry:
+            return True
+        # Refresh if token expires in less than 60 seconds
+        return time.time() >= (self._token_expiry - 60)
 
     async def async_login(self, refresh_token: str = None):
         """Login using refresh token."""
@@ -90,7 +102,20 @@ class LGThinQAPI:
             response.raise_for_status()
             result = await response.json()
             self._access_token = result["access_token"]
+
+            # Calculate token expiry time
+            expires_in = result.get(
+                "expires_in", 3600
+            )  # Default to 1 hour if not provided
+            self._token_expiry = time.time() + expires_in
+
+            # Update refresh token if a new one is provided
+            old_refresh_token = self._refresh_token
             self._refresh_token = result.get("refresh_token", self._refresh_token)
+
+            # Notify callback if refresh token changed
+            if self._token_update_callback and self._refresh_token != old_refresh_token:
+                self._token_update_callback(self._refresh_token)
 
         # After login, get user info to get user_no
         await self._async_get_user_info()
@@ -123,19 +148,48 @@ class LGThinQAPI:
             result = await response.json()
             self._user_no = result.get("user_no")
 
+    async def _ensure_token(self):
+        """Ensure we have a valid access token, refresh if needed."""
+        if self._is_token_expired():
+            _LOGGER.debug("Access token expired or missing, refreshing...")
+            await self.async_login()
+
     async def async_get_devices(self):
         """Get list of humidifier devices."""
-        if not self._access_token:
-            await self.async_login()
+        await self._ensure_token()
 
         # 1. Get Homes
         url = f"{THINQ_API_BASE_URL}/v1/service/homes"
         headers = self._get_common_headers()
 
-        async with self._session.get(url, headers=headers) as response:
-            response.raise_for_status()
-            result = await response.json()
-            homes = result.get("result", {}).get("item", [])
+        try:
+            async with self._session.get(url, headers=headers) as response:
+                if response.status == 401:
+                    # Token might have been invalidated, refresh and retry
+                    _LOGGER.debug("Got 401 error, refreshing token and retrying...")
+                    await self.async_login()
+                    headers = self._get_common_headers()
+                    async with self._session.get(
+                        url, headers=headers
+                    ) as retry_response:
+                        retry_response.raise_for_status()
+                        result = await retry_response.json()
+                else:
+                    response.raise_for_status()
+                    result = await response.json()
+                homes = result.get("result", {}).get("item", [])
+        except aiohttp.ClientResponseError as err:
+            if err.status == 401:
+                # Final attempt after refresh
+                _LOGGER.debug("Got 401 error, refreshing token and retrying...")
+                await self.async_login()
+                headers = self._get_common_headers()
+                async with self._session.get(url, headers=headers) as response:
+                    response.raise_for_status()
+                    result = await response.json()
+                    homes = result.get("result", {}).get("item", [])
+            else:
+                raise
 
         devices = []
         # 2. Get Devices for each home
@@ -153,21 +207,42 @@ class LGThinQAPI:
 
     async def async_get_device_status(self, device_id: str):
         """Get device status snapshot."""
-        if not self._access_token:
-            await self.async_login()
+        await self._ensure_token()
 
         url = f"{THINQ_API_BASE_URL}/v1/service/devices/{device_id}"
         headers = self._get_common_headers(is_web=True)
 
-        async with self._session.get(url, headers=headers) as response:
-            response.raise_for_status()
-            result = await response.json()
-            return result.get("result", {})
+        try:
+            async with self._session.get(url, headers=headers) as response:
+                if response.status == 401:
+                    _LOGGER.debug("Got 401 error, refreshing token and retrying...")
+                    await self.async_login()
+                    headers = self._get_common_headers(is_web=True)
+                    async with self._session.get(
+                        url, headers=headers
+                    ) as retry_response:
+                        retry_response.raise_for_status()
+                        result = await retry_response.json()
+                        return result.get("result", {})
+                else:
+                    response.raise_for_status()
+                    result = await response.json()
+                    return result.get("result", {})
+        except aiohttp.ClientResponseError as err:
+            if err.status == 401:
+                _LOGGER.debug("Got 401 error, refreshing token and retrying...")
+                await self.async_login()
+                headers = self._get_common_headers(is_web=True)
+                async with self._session.get(url, headers=headers) as response:
+                    response.raise_for_status()
+                    result = await response.json()
+                    return result.get("result", {})
+            else:
+                raise
 
     async def async_set_mode(self, device_id: str, mode: int):
         """Set operation mode."""
-        if not self._access_token:
-            await self.async_login()
+        await self._ensure_token()
 
         url = f"{THINQ_API_BASE_URL}/v1/service/devices/{device_id}/control-sync"
         headers = self._get_common_headers(is_web=True)
@@ -182,9 +257,34 @@ class LGThinQAPI:
             "dataGetList": None,
         }
 
-        async with self._session.post(url, headers=headers, json=data) as response:
-            response.raise_for_status()
-            return await response.json()
+        try:
+            async with self._session.post(url, headers=headers, json=data) as response:
+                if response.status == 401:
+                    _LOGGER.debug("Got 401 error, refreshing token and retrying...")
+                    await self.async_login()
+                    headers = self._get_common_headers(is_web=True)
+                    headers["Content-Type"] = "application/json"
+                    async with self._session.post(
+                        url, headers=headers, json=data
+                    ) as retry_response:
+                        retry_response.raise_for_status()
+                        return await retry_response.json()
+                else:
+                    response.raise_for_status()
+                    return await response.json()
+        except aiohttp.ClientResponseError as err:
+            if err.status == 401:
+                _LOGGER.debug("Got 401 error, refreshing token and retrying...")
+                await self.async_login()
+                headers = self._get_common_headers(is_web=True)
+                headers["Content-Type"] = "application/json"
+                async with self._session.post(
+                    url, headers=headers, json=data
+                ) as response:
+                    response.raise_for_status()
+                    return await response.json()
+            else:
+                raise
 
     def _get_common_headers(self, is_web=False):
         """Get common headers for API calls."""
