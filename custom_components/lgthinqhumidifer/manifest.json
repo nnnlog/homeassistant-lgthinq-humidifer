@@ -1,0 +1,12 @@
+{
+  "domain": "lgthinqhumidifer",
+  "name": "LG ThinQ Humidifier",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/nnnlog/homeassistant-lgthinq-humidifier",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/nnnlog/homeassistant-lgthinq-humidifier/issues",
+  "requirements": [],
+  "version": "0.0.1"
+}
