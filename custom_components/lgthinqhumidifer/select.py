@@ -4,6 +4,7 @@ import logging
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -37,9 +38,21 @@ class LGThinQHumidifierMode(CoordinatorEntity, SelectEntity):
         super().__init__(coordinator)
         self._api = api
         self._device_id = device["deviceId"]
-        self._attr_name = f"{device['alias']} Mode"
-        self._attr_unique_id = f"{device['deviceId']}_mode"
+        self._alias = device["alias"]
+        self._model_name = device.get("modelName")
+        self._attr_name = f"{self._alias} Mode"
+        self._attr_unique_id = f"{self._device_id}_mode"
         self._attr_options = list(MODE_TO_STR.values())
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return the device info."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._device_id)},
+            name=self._alias,
+            manufacturer="LG",
+            model=self._model_name,
+        )
 
     @property
     def current_option(self) -> str | None:
