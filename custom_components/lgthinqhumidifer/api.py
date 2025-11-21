@@ -173,58 +173,58 @@ class LGThinQAPI:
             headers.update(kwargs.pop("headers"))
 
         # First attempt
-        async with self._session.request(
-            method, url, headers=headers, **kwargs
-        ) as response:
-            # If we get 400 or 401, refresh token and retry
-            if response.status in (400, 401):
-                _LOGGER.debug(
-                    f"Got {response.status} error, refreshing token and retrying..."
-                )
-                await self.async_login()
+        try:
+            async with self._session.request(
+                method, url, headers=headers, **kwargs
+            ) as response:
+                if response.status in (400, 401):
+                    _LOGGER.debug(
+                        f"Got {response.status} error, refreshing token and retrying..."
+                    )
+                    await self.async_login()
 
-                # Update headers with new token
-                headers = self._get_common_headers(is_web=is_web)
-                if "headers" in kwargs:
-                    headers.update(kwargs.pop("headers"))
+                    # Update headers with new token
+                    headers = self._get_common_headers(is_web=is_web)
+                    if "headers" in kwargs:
+                        headers.update(kwargs.pop("headers"))
 
-                # Retry with new token
-                async with self._session.request(
-                    method, url, headers=headers, **kwargs
-                ) as retry_response:
-                    retry_response.raise_for_status()
-                    return retry_response
-            else:
-                response.raise_for_status()
-                return response
+                    # Retry with new token
+                    async with self._session.request(
+                        method, url, headers=headers, **kwargs
+                    ) as retry_response:
+                        retry_response.raise_for_status()
+                        return await retry_response.json()
+                else:
+                    response.raise_for_status()
+                    return await response.json()
+        except Exception as e:
+            _LOGGER.error(f"API request failed: {e}")
+            raise
 
     async def async_get_devices(self):
         """Get list of humidifier devices."""
         # 1. Get Homes
         url = f"{THINQ_API_BASE_URL}/v1/service/homes"
-        async with await self._api_request("GET", url) as response:
-            result = await response.json()
-            homes = result.get("result", {}).get("item", [])
+        result = await self._api_request("GET", url)
+        homes = result.get("result", {}).get("item", [])
 
         devices = []
         # 2. Get Devices for each home
         for home in homes:
             home_id = home["homeId"]
             url = f"{THINQ_API_BASE_URL}/v1/service/homes/{home_id}"
-            async with await self._api_request("GET", url) as response:
-                result = await response.json()
-                home_devices = result.get("result", {}).get("devices", [])
-                for device in home_devices:
-                    if device.get("deviceType") == DEVICE_TYPE_HUMIDIFIER:
-                        devices.append(device)
+            result = await self._api_request("GET", url)
+            home_devices = result.get("result", {}).get("devices", [])
+            for device in home_devices:
+                if device.get("deviceType") == DEVICE_TYPE_HUMIDIFIER:
+                    devices.append(device)
         return devices
 
     async def async_get_device_status(self, device_id: str):
         """Get device status snapshot."""
         url = f"{THINQ_API_BASE_URL}/v1/service/devices/{device_id}"
-        async with await self._api_request("GET", url, is_web=True) as response:
-            result = await response.json()
-            return result.get("result", {})
+        result = await self._api_request("GET", url, is_web=True)
+        return result.get("result", {})
 
     async def async_set_mode(self, device_id: str, mode: int):
         """Set operation mode."""
@@ -240,10 +240,9 @@ class LGThinQAPI:
         }
 
         headers = {"Content-Type": "application/json"}
-        async with await self._api_request(
+        return await self._api_request(
             "POST", url, is_web=True, json=data, headers=headers
-        ) as response:
-            return await response.json()
+        )
 
     def _get_common_headers(self, is_web=False):
         """Get common headers for API calls."""
